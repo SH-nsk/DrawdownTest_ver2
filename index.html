@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Aquifer Test Analysis (Jacob Method)</title>
-    <!-- ライブラリ読み込み -->
+    <title>Aquifer Test Analysis (Jacob & Theis)</title>
+    <!-- Library Imports -->
     <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
     <script src="https://unpkg.com/simple-statistics@7.8.3/dist/simple-statistics.min.js"></script>
@@ -13,7 +13,7 @@
     <style>
         :root { --primary: #1a73e8; --success: #34a853; --danger: #ea4335; --bg: #f8f9fa; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 10px; background: var(--bg); color: #3c4043; }
-        .container { max-width: 800px; margin: 0 auto; }
+        .container { max-width: 900px; margin: 0 auto; }
         .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); margin-bottom: 15px; }
         h2, h3 { color: var(--primary); margin-top: 0; font-size: 1.2rem; border-bottom: 2px solid #e8f0fe; padding-bottom: 8px; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -30,7 +30,8 @@
         .result-box { background: #e8f0fe; padding: 15px; border-radius: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
         .res-item { text-align: center; border: 1px solid #c2d7fa; padding: 10px; border-radius: 6px; background: white; }
         .res-val { font-size: 1.1rem; font-weight: bold; color: var(--primary); display: block; margin-top: 4px; }
-        #plotHydro, #plotJacob { width: 100%; min-height: 350px; margin-top: 10px; }
+        .instruction { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 10px 0; font-size: 0.9rem; }
+        #plotHydro, #plotJacob, #plotTheis { width: 100%; min-height: 400px; margin-top: 10px; border: 1px solid #eee; border-radius: 8px; }
         .hidden { display: none; }
         @media (max-width: 480px) { .grid { grid-template-columns: 1fr; } }
     </style>
@@ -75,12 +76,16 @@
         <div class="btn-group">
             <input type="file" id="csvFile" class="hidden" accept=".csv">
             <button class="btn-load" onclick="document.getElementById('csvFile').click()">CSV読込</button>
-            <button class="btn-calc" onclick="runAnalysis()">解析実行</button>
+            <button class="btn-calc" onclick="initializeAnalysis()">解析開始（グラフ表示）</button>
         </div>
     </div>
 
     <div id="resultsArea" class="card hidden">
         <h3>📊 解析結果</h3>
+        <div class="instruction" id="fitInstruct">
+            <strong>【操作ガイド】</strong> 下の「ヤコブ法解析図」のグラフ上で、直線区間の<strong>開始点</strong>と<strong>終了点</strong>の2箇所をタップ（クリック）して解析範囲を指定してください。
+        </div>
+        
         <div class="result-box">
             <div class="res-item">透水量係数 T [m²/s]<span id="resT" class="res-val">-</span></div>
             <div class="res-item">透水係数 k [m/s]<span id="resK" class="res-val">-</span></div>
@@ -88,8 +93,9 @@
             <div class="res-item">決定係数 R²<span id="resR2" class="res-val">-</span></div>
         </div>
 
-        <div id="plotHydro"></div>
         <div id="plotJacob"></div>
+        <div id="plotTheis"></div>
+        <div id="plotHydro"></div>
 
         <div class="btn-group">
             <button class="btn-csv" onclick="exportCSV()">CSV保存</button>
@@ -101,177 +107,293 @@
 <script>
 let globalData = [];
 let analysisResults = {};
+let selectedPoints = []; // Clicked points indices
 
 /**
- * 解析実行メイン関数
+ * 井戸関数 W(u) の近似計算
  */
-function runAnalysis() {
+function wellFunction(u) {
+    if (u <= 0) return 0;
+    // 小さいuに対する多項式近似と級数展開のハイブリッド
+    const eulerGamma = 0.5772156649;
+    if (u < 1) {
+        let term = u;
+        let sum = u;
+        for (let n = 2; n < 20; n++) {
+            term *= (-u) * (n - 1) / (n * n);
+            sum += term;
+        }
+        return -eulerGamma - Math.log(u) + sum;
+    } else {
+        // 大きいuに対する近似
+        const a = [0.2677737343, 8.6347608925, 18.0590173560, 8.5242330240];
+        const b = [3.9684967471, 21.0944531382, 25.6329561486, 9.5733223454];
+        let num = 0, den = 1;
+        for(let i=0; i<4; i++){
+            num = num * u + a[i];
+            den = den * u + b[i];
+        }
+        return (Math.exp(-u) / u) * (num / den);
+    }
+}
+
+/**
+ * データの読み込みと初期描画
+ */
+function initializeAnalysis() {
     const text = document.getElementById('dataInput').value.trim();
     const baseWL = parseFloat(document.getElementById('baseWL').value);
-    const Q_Lmin = parseFloat(document.getElementById('inputQ_L').value);
-    const r = parseFloat(document.getElementById('inputR').value);
-    const L = parseFloat(document.getElementById('inputL').value);
 
     if (!text) return alert("データ入力が必要です");
 
-    // 揚水量を m3/s に変換
-    const Q_m3s = Q_Lmin / 1000 / 60;
-
-    // テキストデータのパース
     const rows = text.split(/\n/);
-    globalData = rows.map(row => {
+    globalData = rows.map((row, idx) => {
         const cols = row.trim().split(/[\s,t]+/).map(v => parseFloat(v));
         if (cols.length >= 2 && !isNaN(cols[0]) && !isNaN(cols[1])) {
-            return { t: cols[0], wl: cols[1], s: cols[1] - baseWL };
+            return { id: idx, t: cols[0], wl: cols[1], s: cols[1] - baseWL };
         }
         return null;
     }).filter(d => d !== null && d.t > 0);
 
-    if (globalData.length < 3) return alert("解析には少なくとも3点以上の有効なデータが必要です。");
+    if (globalData.length < 3) return alert("データが足りません。");
 
-    // Jacob法計算 (log10(t) vs s)
-    const logT = globalData.map(d => Math.log10(d.t));
-    const points = logT.map((x, i) => [x, globalData[i].s]);
+    selectedPoints = []; // 選択リセット
+    document.getElementById('resultsArea').classList.remove('hidden');
     
-    // 単純線形回帰
-    const reg = ss.linearRegression(points);
-    const lre = ss.linearRegressionLine(reg);
-    const r2 = ss.rSquared(points, lre);
+    // 初回グラフ描画（フィッティングなし）
+    drawHydrograph();
+    drawJacobPlot([]);
+    document.getElementById('plotTheis').innerHTML = ""; // タイス図は計算後
+}
 
-    // 水理定数算出
-    // deltaS = 1対数周期あたりの水位低下量 = 回帰直線の傾き
+/**
+ * 水位変動グラフ（反転軸）
+ */
+function drawHydrograph() {
+    const trace = {
+        x: globalData.map(d => d.t),
+        y: globalData.map(d => d.wl),
+        mode: 'lines+markers',
+        name: '観測水位',
+        line: { color: '#1a73e8' }
+    };
+    const layout = {
+        title: '水位変動グラフ',
+        xaxis: { title: '経過時間 (min)' },
+        yaxis: { title: '水位 (G.L.-m)', autorange: 'reverse' }, // 数字が大きい方が下
+        margin: { t: 50, b: 50, l: 60, r: 30 }
+    };
+    Plotly.newPlot('plotHydro', [trace], layout);
+}
+
+/**
+ * ヤコブ法解析図（クリックイベント付）
+ */
+function drawJacobPlot(fitTrace = []) {
+    const logT = globalData.map(d => Math.log10(d.t));
+    const sArr = globalData.map(d => d.s);
+
+    const traceData = {
+        x: logT,
+        y: sArr,
+        mode: 'markers',
+        name: '実測データ',
+        marker: { size: 10, color: '#5f6368' },
+        customdata: globalData.map(d => d.id)
+    };
+
+    const layout = {
+        title: 'ヤコブ法解析図 (直線区間を2点タップして指定)',
+        xaxis: { title: 'log10(経過時間 [min])' },
+        yaxis: { title: '水位低下量 s [m]' },
+        margin: { t: 50, b: 50, l: 60, r: 30 },
+        hovermode: 'closest',
+        showlegend: true
+    };
+
+    Plotly.newPlot('plotJacob', [traceData, ...fitTrace], layout);
+
+    // クリックイベントの登録
+    const plot = document.getElementById('plotJacob');
+    plot.on('plotly_click', function(data){
+        const pointIdx = data.points[0].pointIndex;
+        handlePointSelection(pointIdx);
+    });
+}
+
+/**
+ * 点選択のハンドリング
+ */
+function handlePointSelection(idx) {
+    selectedPoints.push(idx);
+    
+    if (selectedPoints.length === 1) {
+        document.getElementById('fitInstruct').innerHTML = `<strong>【選択中】</strong> 1点目を選択しました（Index: ${idx}）。次に<strong>終了点</strong>をタップしてください。`;
+    } else if (selectedPoints.length === 2) {
+        document.getElementById('fitInstruct').innerHTML = `<strong>【解析完了】</strong> 範囲を指定しました。再度タップすると別の範囲で再計算できます。`;
+        performJacobCalculation();
+    } else {
+        selectedPoints = [idx];
+        document.getElementById('fitInstruct').innerHTML = `<strong>【選択中】</strong> 1点目を選択しました（Index: ${idx}）。次に<strong>終了点</strong>をタップしてください。`;
+    }
+}
+
+/**
+ * 指定された範囲での計算実行
+ */
+function performJacobCalculation() {
+    const start = Math.min(selectedPoints[0], selectedPoints[1]);
+    const end = Math.max(selectedPoints[0], selectedPoints[1]);
+    
+    const Q_Lmin = parseFloat(document.getElementById('inputQ_L').value);
+    const Q_m3s = Q_Lmin / 1000 / 60;
+    const r = parseFloat(document.getElementById('inputR').value);
+    const L = parseFloat(document.getElementById('inputL').value);
+    const baseWL = parseFloat(document.getElementById('baseWL').value);
+
+    // フィッティング範囲のデータ
+    const fitData = globalData.slice(start, end + 1);
+    const logTFit = fitData.map(d => Math.log10(d.t));
+    const sFit = fitData.map(d => d.s);
+    const regressionPoints = logTFit.map((x, i) => [x, sFit[i]]);
+
+    const reg = ss.linearRegression(regressionPoints);
+    const lre = ss.linearRegressionLine(reg);
+    const r2 = ss.rSquared(regressionPoints, lre);
+
+    // 水理定数
     const deltaS = reg.m; 
     const T = (0.183 * Q_m3s) / deltaS;
     const k = T / L;
-    
-    // t0 (s=0となる時間[分])
     const logT0 = -reg.b / reg.m;
     const t0_min = Math.pow(10, logT0);
     const S = (2.25 * T * (t0_min * 60)) / Math.pow(r, 2);
 
     analysisResults = { T, k, S, r2, deltaS, t0_min, Q_m3s, Q_Lmin, r, L, baseWL };
 
-    // 表示更新
-    document.getElementById('resultsArea').classList.remove('hidden');
+    // 結果表示
     document.getElementById('resT').innerText = T.toExponential(3);
     document.getElementById('resK').innerText = k.toExponential(3);
     document.getElementById('resS').innerText = S.toExponential(3);
     document.getElementById('resR2').innerText = r2.toFixed(4);
 
-    drawPlots(logT, lre);
+    // ヤコブ図に回帰直線を追加
+    const fullLogT = globalData.map(d => Math.log10(d.t));
+    const fitLineTrace = {
+        x: [Math.min(...fullLogT), Math.max(...fullLogT)],
+        y: [lre(Math.min(...fullLogT)), lre(Math.max(...fullLogT))],
+        mode: 'lines',
+        name: 'Jacob近似直線',
+        line: { color: 'red', width: 3 }
+    };
+    const highlightTrace = {
+        x: logTFit,
+        y: sFit,
+        mode: 'markers',
+        name: '解析対象区間',
+        marker: { size: 12, color: 'red', symbol: 'circle-open' }
+    };
+    drawJacobPlot([fitLineTrace, highlightTrace]);
+
+    // タイス適合確認図の描画
+    drawTheisPlot(T, S, Q_m3s, r);
 }
 
 /**
- * グラフ描画
+ * タイス理論曲線との適合確認グラフ
  */
-function drawPlots(logT, lre) {
-    const timeArr = globalData.map(d => d.t);
-    const wlArr = globalData.map(d => d.wl);
-    const sArr = globalData.map(d => d.s);
+function drawTheisPlot(T, S, Q, r) {
+    // 時間軸を細かく生成して曲線を滑らかにする
+    const times = globalData.map(d => d.t);
+    const minT = Math.min(...times) * 0.5;
+    const maxT = Math.max(...times) * 1.5;
+    
+    const curveT = [];
+    const curveS = [];
+    const steps = 100;
+    const logMin = Math.log10(minT);
+    const logMax = Math.log10(maxT);
 
-    // 1. 水位変動グラフ (ハイドログラフ)
-    const traceHydro = {
-        x: timeArr,
-        y: wlArr,
-        mode: 'lines+markers',
-        name: '観測水位',
-        line: { color: '#1a73e8', shape: 'spline' }
-    };
-    const layoutHydro = {
-        title: '水位変動グラフ',
-        xaxis: { title: '経過時間 (min)' },
-        yaxis: { title: '水位 (G.L.-m)', autorange: 'reverse' }, // 水位なので下向き
-        margin: { t: 50, b: 50, l: 60, r: 30 }
-    };
-    Plotly.newPlot('plotHydro', [traceHydro], layoutHydro);
+    for (let i = 0; i <= steps; i++) {
+        const t_min = Math.pow(10, logMin + (logMax - logMin) * (i / steps));
+        const t_sec = t_min * 60;
+        const u = (r * r * S) / (4 * T * t_sec);
+        const Wu = wellFunction(u);
+        const s_theo = (Q / (4 * Math.PI * T)) * Wu;
+        curveT.push(t_min);
+        curveS.push(s_theo);
+    }
 
-    // 2. Jacob法解析グラフ (片対数)
-    const tracePoints = {
-        x: logT,
-        y: sArr,
+    const traceObs = {
+        x: globalData.map(d => d.t),
+        y: globalData.map(d => d.s),
         mode: 'markers',
         name: '実測低下量',
         marker: { color: '#5f6368' }
     };
-    const traceFit = {
-        x: [Math.min(...logT), Math.max(...logT)],
-        y: [lre(Math.min(...logT)), lre(Math.max(...logT))],
+
+    const traceTheo = {
+        x: curveT,
+        y: curveS,
         mode: 'lines',
-        name: 'Jacob近似直線',
-        line: { color: '#ea4335', width: 2 }
+        name: '推定タイス曲線',
+        line: { color: '#success', dash: 'dash', width: 2 }
     };
-    const layoutJacob = {
-        title: 'Jacob法解析図',
-        xaxis: { title: 'log10(経過時間 [min])' },
+
+    const layout = {
+        title: 'タイス標準曲線との適合確認',
+        xaxis: { title: '経過時間 (min)', type: 'log' },
         yaxis: { title: '水位低下量 s [m]' },
         margin: { t: 50, b: 50, l: 60, r: 30 },
         legend: { orientation: 'h', y: -0.2 }
     };
-    Plotly.newPlot('plotJacob', [tracePoints, traceFit], layoutJacob);
+
+    Plotly.newPlot('plotTheis', [traceObs, traceTheo], layout);
 }
 
 /**
- * CSVインポート処理
+ * CSVインポート・エクスポート
  */
 document.getElementById('csvFile').addEventListener('change', function(e) {
     const file = e.target.files[0];
     if (!file) return;
-    
     Papa.parse(file, {
         header: false,
         complete: function(results) {
             const rows = results.data;
             let dataLines = [];
-            
             rows.forEach(row => {
                 if (!row[0]) return;
                 const cell = String(row[0]);
-                
-                // メタデータの復元
                 if (cell.startsWith('# SITE:')) document.getElementById('siteName').value = cell.replace('# SITE:', '').trim();
-                if (cell.startsWith('# POINT:')) document.getElementById('pointName').value = cell.replace('# POINT:', '').trim();
                 if (cell.startsWith('# Q_LMIN:')) document.getElementById('inputQ_L').value = cell.replace('# Q_LMIN:', '').trim();
                 if (cell.startsWith('# R_M:')) document.getElementById('inputR').value = cell.replace('# R_M:', '').trim();
                 if (cell.startsWith('# L_M:')) document.getElementById('inputL').value = cell.replace('# L_M:', '').trim();
                 if (cell.startsWith('# BASEWL:')) document.getElementById('baseWL').value = cell.replace('# BASEWL:', '').trim();
-                
-                // 数値データの抽出
-                if (!isNaN(parseFloat(row[0])) && !isNaN(parseFloat(row[1]))) {
-                    dataLines.push(`${row[0]},${row[1]}`);
-                }
+                if (!isNaN(parseFloat(row[0])) && !isNaN(parseFloat(row[1]))) dataLines.push(`${row[0]},${row[1]}`);
             });
-            
             document.getElementById('dataInput').value = dataLines.join('\n');
-            runAnalysis();
+            initializeAnalysis();
         }
     });
 });
 
-/**
- * CSVエクスポート
- */
 function exportCSV() {
     const site = document.getElementById('siteName').value || 'site';
-    const point = document.getElementById('pointName').value || 'point';
-    
-    // メタデータをヘッダーに埋め込む
     let csvContent = [
         `# SITE: ${site}`,
-        `# POINT: ${point}`,
         `# Q_LMIN: ${document.getElementById('inputQ_L').value}`,
         `# R_M: ${document.getElementById('inputR').value}`,
         `# L_M: ${document.getElementById('inputL').value}`,
         `# BASEWL: ${document.getElementById('baseWL').value}`,
         "Time(min),WaterLevel(m),Drawdown(m)"
     ].join("\n") + "\n";
-    
     csvContent += globalData.map(d => `${d.t},${d.wl},${d.s}`).join("\n");
-    
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `${site}_${point}_data.csv`);
+    link.href = url;
+    link.download = `${site}_analysis.csv`;
     link.click();
 }
 
@@ -281,43 +403,26 @@ function exportCSV() {
 function exportPDF() {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF();
-    
     const site = document.getElementById('siteName').value || 'Unknown Site';
-    const point = document.getElementById('pointName').value || 'Unknown Point';
-
     doc.setFontSize(18);
     doc.text("Aquifer Test Analysis Report", 14, 20);
-    
     doc.setFontSize(12);
-    doc.text(`Site: ${site}`, 14, 30);
-    doc.text(`Point: ${point}`, 14, 37);
-    doc.text(`Date: ${new Date().toLocaleDateString()}`, 14, 44);
-
+    doc.text(`Site: ${site} / Point: ${document.getElementById('pointName').value}`, 14, 30);
     doc.autoTable({
-        startY: 50,
+        startY: 40,
         head: [['Property', 'Value', 'Unit']],
         body: [
             ['Pumping Rate (Q)', analysisResults.Q_Lmin, 'L/min'],
             ['Distance (r)', analysisResults.r, 'm'],
-            ['Screen Length (L)', analysisResults.L, 'm'],
             ['Initial WL', analysisResults.baseWL, 'G.L.-m'],
-            ['Transmissivity (T)', analysisResults.T.toExponential(3), 'm2/s'],
-            ['Hydraulic Conductivity (k)', analysisResults.k.toExponential(3), 'm/s'],
-            ['Storage Coefficient (S)', analysisResults.S.toExponential(3), '-'],
-            ['R-Squared', analysisResults.r2.toFixed(4), '-']
+            ['Transmissivity (T)', analysisResults.T ? analysisResults.T.toExponential(3) : '-', 'm2/s'],
+            ['Hydraulic Conductivity (k)', analysisResults.k ? analysisResults.k.toExponential(3) : '-', 'm/s'],
+            ['Storage Coefficient (S)', analysisResults.S ? analysisResults.S.toExponential(3) : '-', '-'],
+            ['R-Squared', analysisResults.r2 ? analysisResults.r2.toFixed(4) : '-', '-']
         ]
     });
-
-    doc.text("Summary Table (Top 10)", 14, doc.lastAutoTable.finalY + 10);
-    doc.autoTable({
-        startY: doc.lastAutoTable.finalY + 15,
-        head: [['Time(min)', 'WL(m)', 'Drawdown(s)']],
-        body: globalData.slice(0, 10).map(d => [d.t, d.wl.toFixed(2), d.s.toFixed(2)])
-    });
-
     doc.save(`${site}_report.pdf`);
 }
 </script>
-
 </body>
 </html>
