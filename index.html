@@ -3,131 +3,160 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jacob Method Solver</title>
+    <title>揚水試験解析ツール</title>
     <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
     <script src="https://unpkg.com/simple-statistics@7.8.3/dist/simple-statistics.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
     <style>
-        body { font-family: sans-serif; margin: 20px; background: #f4f7f6; color: #333; }
-        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        input, select { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 16px; }
-        button { width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
-        .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
-        .result-item { background: #e9ecef; padding: 15px; border-radius: 8px; text-align: center; }
-        .result-val { font-size: 1.2em; font-weight: bold; color: #007bff; display: block; }
-        #plot { width: 100%; height: 400px; }
+        body { font-family: -apple-system, sans-serif; margin: 10px; background: #f0f2f5; }
+        .card { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-bottom: 15px; }
+        h2, h3 { color: #1a73e8; margin-top: 0; }
+        label { display: block; font-size: 0.9em; font-weight: bold; margin-top: 10px; }
+        input { width: 100%; padding: 10px; margin: 5px 0; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 16px; }
+        .btn-group { display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap; }
+        button { flex: 1; min-width: 120px; padding: 12px; border: none; border-radius: 6px; font-size: 14px; font-weight: bold; cursor: pointer; }
+        .btn-calc { background: #1a73e8; color: white; }
+        .btn-csv { background: #34a853; color: white; }
+        .btn-pdf { background: #ea4335; color: white; }
+        .result-box { background: #e8f0fe; padding: 15px; border-radius: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+        th { background: #f8f9fa; }
     </style>
 </head>
 <body>
 
-    <h2>🚰 揚水試験解析 (Jacob法)</h2>
-
-    <div class="card">
-        <label>📁 CSVファイル選択</label>
-        <input type="file" id="csvFile" accept=".csv">
-        
-        <label>揚水量 Q [m³/s]</label>
-        <input type="number" id="inputQ" value="0.01" step="0.001">
-        
-        <label>井戸間距離 r [m]</label>
-        <input type="number" id="inputR" value="10" step="0.1">
-        
-        <button onclick="calculate()">解析実行</button>
+<div class="card">
+    <h2>🏢 現場情報・条件入力</h2>
+    <label>現場名称</label><input type="text" id="siteName" placeholder="例：〇〇工事現場">
+    <label>地点名</label><input type="text" id="pointName" placeholder="例：No.1 観測井">
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <div><label>揚水量 (L/min)</label><input type="number" id="inputQ_L" value="60"></div>
+        <div><label>観測距離 r (m)</label><input type="number" id="inputR" value="10"></div>
+        <div><label>スクリーン長 (m)</label><input type="number" id="inputL" value="5"></div>
+        <div><label>開始前水位 (G.L.-m)</label><input type="number" id="baseWL" value="2.50" step="0.01"></div>
     </div>
+</div>
 
-    <div id="results" class="card" style="display:none;">
-        <h3>📊 解析結果</h3>
-        <div class="result-grid">
-            <div class="result-item">T [m²/s]<span id="resT" class="result-val">-</span></div>
-            <div class="result-item">S [-]<span id="resS" class="result-val">-</span></div>
-        </div>
-        <p>決定係数 R²: <span id="resR2">-</span></p>
-        <div id="plot"></div>
+<div class="card">
+    <h3>📝 データ入力（時間・水位）</h3>
+    <p style="font-size:0.8em; color:#666;">カンマ区切り、またはExcelから貼り付け可能。一度保存したCSVの再読み込みも対応。</p>
+    <textarea id="dataInput" style="width:100%; height:120px; padding:10px;" placeholder="経過時間(分) 水位(G.L.-m)&#10;1  2.65&#10;2  2.80&#10;5  3.10..."></textarea>
+    <div class="btn-group">
+        <input type="file" id="csvFile" style="display:none" accept=".csv">
+        <button class="btn-csv" onclick="document.getElementById('csvFile').click()">CSV読込</button>
+        <button class="btn-calc" onclick="runAnalysis()">解析・グラフ更新</button>
     </div>
+</div>
 
-    <script>
-        let rawData = [];
+<div id="resultsArea" class="card" style="display:none;">
+    <h3>📊 解析結果</h3>
+    <div class="result-box">
+        <div>透水量係数 T<br><span id="resT" style="font-weight:bold; color:#1a73e8;">-</span> m²/s</div>
+        <div>透水係数 k<br><span id="resK" style="font-weight:bold; color:#1a73e8;">-</span> m/s</div>
+        <div>貯留係数 S<br><span id="resS" style="font-weight:bold; color:#1a73e8;">-</span> [-]</div>
+        <div>決定係数 R²<br><span id="resR2" style="font-weight:bold; color:#1a73e8;">-</span></div>
+    </div>
+    <div id="plotHydro" style="margin-top:20px;"></div>
+    <div id="plotJacob" style="margin-top:20px;"></div>
+    <div class="btn-group">
+        <button class="btn-csv" onclick="exportCSV()">CSV保存</button>
+        <button class="btn-pdf" onclick="exportPDF()">PDF保存</button>
+    </div>
+</div>
 
-        // CSV読み込み処理
-        document.getElementById('csvFile').addEventListener('change', function(e) {
-            const file = e.target.files[0];
-            Papa.parse(file, {
-                header: false,
-                dynamicTyping: true,
-                complete: function(results) {
-                    rawData = results.data.filter(row => row.length >= 2 && typeof row[0] === 'number');
-                    alert("データ読み込み完了: " + rawData.length + "件");
-                }
-            });
-        });
+<script>
+let globalData = [];
 
-        function calculate() {
-            if (rawData.length < 10) return alert("データが足りません");
+function runAnalysis() {
+    const text = document.getElementById('dataInput').value.trim();
+    const baseWL = parseFloat(document.getElementById('baseWL').value);
+    const Q_m3s = parseFloat(document.getElementById('inputQ_L').value) / 1000 / 60;
+    const r = parseFloat(document.getElementById('inputR').value);
+    const L = parseFloat(document.getElementById('inputL').value);
 
-            const Q = parseFloat(document.getElementById('inputQ').value);
-            const r = parseFloat(document.getElementById('inputR').value);
+    // データ整形
+    const rows = text.split(/\n/);
+    globalData = rows.map(row => {
+        const cols = row.split(/[\s,t]+/).map(v => parseFloat(v));
+        return { t: cols[0], wl: cols[1], s: cols[1] - baseWL };
+    }).filter(d => !isNaN(d.t) && !isNaN(d.wl));
 
-            // データの準備
-            const time = rawData.map(d => d[0]);
-            const drawdown = rawData.map(d => d[1]);
-            const logTime = time.map(t => Math.log10(t));
+    if (globalData.length < 3) return alert("データを3件以上入力してください。");
 
-            // 自動フィッティング (R²最大化を簡易的に実装)
-            let bestR2 = -1;
-            let bestParams = { m: 0, b: 0, xRange: [], yRange: [] };
+    // Jacob法計算
+    const logT = globalData.map(d => Math.log10(d.t));
+    const points = logT.map((x, i) => [x, globalData[i].s]);
+    const reg = ss.linearRegression(points);
+    const lre = ss.linearRegressionLine(reg);
+    const r2 = ss.rSquared(points, lre);
 
-            // 計算負荷を抑えるため全探索を少し間引くか、単純に全件に近い後半部分で計算
-            // ここでは簡易的に全データで回帰
-            const points = logTime.map((x, i) => [x, drawdown[i]]);
-            const regression = ss.linearRegression(points);
-            const lre = ss.linearRegressionLine(regression);
-            
-            // R2の計算
-            const r2 = ss.rSquared(points, lre);
+    const deltaS = reg.m; 
+    const T = 0.183 * Q_m3s / deltaS;
+    const k = T / L;
+    const t0 = Math.pow(10, -reg.b / reg.m);
+    const S = 2.25 * T * (t0 * 60) / Math.pow(r, 2);
 
-            // Jacob法の計算
-            // delta_s は 1対数周期あたりの水位低下 = 傾き(m)
-            const m = regression.m;
-            const b = regression.b;
-            
-            const T = 0.183 * Q / m;
-            const t0 = Math.pow(10, -b / m);
-            const S = 2.25 * T * (t0 * 60) / Math.pow(r, 2);
+    // 表示更新
+    document.getElementById('resultsArea').style.display = 'block';
+    document.getElementById('resT').innerText = T.toExponential(3);
+    document.getElementById('resK').innerText = k.toExponential(3);
+    document.getElementById('resS').innerText = S.toExponential(3);
+    document.getElementById('resR2').innerText = r2.toFixed(4);
 
-            // 結果の表示
-            document.getElementById('results').style.display = 'block';
-            document.getElementById('resT').innerText = T.toExponential(3);
-            document.getElementById('resS').innerText = S.toExponential(3);
-            document.getElementById('resR2').innerText = r2.toFixed(4);
+    // グラフ描画（水位変動図）
+    Plotly.newPlot('plotHydro', [{
+        x: globalData.map(d => d.t), y: globalData.map(d => d.wl), name: '水位', line: {shape: 'spline'}
+    }], { title: '水位変動グラフ', xaxis: {title: '時間 (min)'}, yaxis: {title: '水位 (G.L.-m)', autorange: 'reverse'} });
 
-            // グラフ描画
-            const trace1 = {
-                x: logTime,
-                y: drawdown,
-                mode: 'markers',
-                name: '実測値',
-                marker: { color: 'gray' }
-            };
+    // グラフ描画（Jacob法）
+    Plotly.newPlot('plotJacob', [
+        { x: logT, y: globalData.map(d => d.s), mode: 'markers', name: '低下量' },
+        { x: logT, y: logT.map(x => lre(x)), mode: 'lines', name: 'Fit' }
+    ], { title: 'Jacob法解析', xaxis: {title: 'log10(t [min])'}, yaxis: {title: '低下量 s [m]'} });
+}
 
-            const fitY = logTime.map(x => lre(x));
-            const trace2 = {
-                x: logTime,
-                y: fitY,
-                mode: 'lines',
-                name: 'Jacob Fit',
-                line: { color: 'red' }
-            };
-
-            const layout = {
-                title: 'Jacob Straight-line Analysis',
-                xaxis: { title: 'log10(time [min])' },
-                yaxis: { title: 'drawdown [m]' },
-                margin: { t: 40, b: 40, l: 40, r: 10 },
-                legend: { orientation: 'h', y: -0.2 }
-            };
-
-            Plotly.newPlot('plot', [trace1, trace2], layout);
+// CSV読み込み
+document.getElementById('csvFile').addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    Papa.parse(file, {
+        complete: function(res) {
+            const dataRows = res.data.filter(r => !isNaN(parseFloat(r[0])));
+            document.getElementById('dataInput').value = dataRows.map(r => `${r[0]} ${r[1]}`).join('\n');
+            runAnalysis();
         }
-    </script>
+    });
+});
+
+function exportCSV() {
+    const site = document.getElementById('siteName').value;
+    const header = "Time(min),WaterLevel(m),Drawdown(m)\n";
+    const body = globalData.map(d => `${d.t},${d.wl},${d.s}`).join("\n");
+    const blob = new Blob([header + body], {type: 'text/csv'});
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${site}_analysis.csv`; a.click();
+}
+
+async function exportPDF() {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.text(`揚水試験解析報告書: ${document.getElementById('siteName').value}`, 10, 10);
+    doc.text(`地点名: ${document.getElementById('pointName').value}`, 10, 20);
+    doc.autoTable({
+        startY: 30,
+        head: [['項目', '値']],
+        body: [
+            ['透水量係数 T', document.getElementById('resT').innerText + ' m2/s'],
+            ['透水係数 k', document.getElementById('resK').innerText + ' m/s'],
+            ['貯留係数 S', document.getElementById('resS').innerText],
+            ['決定係数 R2', document.getElementById('resR2').innerText]
+        ]
+    });
+    doc.save("report.pdf");
+}
+</script>
 </body>
 </html>
