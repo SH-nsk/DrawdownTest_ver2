@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jacob Method Solver</title>
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://unpkg.com/simple-statistics@7.8.3/dist/simple-statistics.min.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background: #f4f7f6; color: #333; }
+        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        input, select { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 16px; }
+        button { width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
+        .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
+        .result-item { background: #e9ecef; padding: 15px; border-radius: 8px; text-align: center; }
+        .result-val { font-size: 1.2em; font-weight: bold; color: #007bff; display: block; }
+        #plot { width: 100%; height: 400px; }
+    </style>
+</head>
+<body>
+
+    <h2>🚰 揚水試験解析 (Jacob法)</h2>
+
+    <div class="card">
+        <label>📁 CSVファイル選択</label>
+        <input type="file" id="csvFile" accept=".csv">
+        
+        <label>揚水量 Q [m³/s]</label>
+        <input type="number" id="inputQ" value="0.01" step="0.001">
+        
+        <label>井戸間距離 r [m]</label>
+        <input type="number" id="inputR" value="10" step="0.1">
+        
+        <button onclick="calculate()">解析実行</button>
+    </div>
+
+    <div id="results" class="card" style="display:none;">
+        <h3>📊 解析結果</h3>
+        <div class="result-grid">
+            <div class="result-item">T [m²/s]<span id="resT" class="result-val">-</span></div>
+            <div class="result-item">S [-]<span id="resS" class="result-val">-</span></div>
+        </div>
+        <p>決定係数 R²: <span id="resR2">-</span></p>
+        <div id="plot"></div>
+    </div>
+
+    <script>
+        let rawData = [];
+
+        // CSV読み込み処理
+        document.getElementById('csvFile').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            Papa.parse(file, {
+                header: false,
+                dynamicTyping: true,
+                complete: function(results) {
+                    rawData = results.data.filter(row => row.length >= 2 && typeof row[0] === 'number');
+                    alert("データ読み込み完了: " + rawData.length + "件");
+                }
+            });
+        });
+
+        function calculate() {
+            if (rawData.length < 10) return alert("データが足りません");
+
+            const Q = parseFloat(document.getElementById('inputQ').value);
+            const r = parseFloat(document.getElementById('inputR').value);
+
+            // データの準備
+            const time = rawData.map(d => d[0]);
+            const drawdown = rawData.map(d => d[1]);
+            const logTime = time.map(t => Math.log10(t));
+
+            // 自動フィッティング (R²最大化を簡易的に実装)
+            let bestR2 = -1;
+            let bestParams = { m: 0, b: 0, xRange: [], yRange: [] };
+
+            // 計算負荷を抑えるため全探索を少し間引くか、単純に全件に近い後半部分で計算
+            // ここでは簡易的に全データで回帰
+            const points = logTime.map((x, i) => [x, drawdown[i]]);
+            const regression = ss.linearRegression(points);
+            const lre = ss.linearRegressionLine(regression);
+            
+            // R2の計算
+            const r2 = ss.rSquared(points, lre);
+
+            // Jacob法の計算
+            // delta_s は 1対数周期あたりの水位低下 = 傾き(m)
+            const m = regression.m;
+            const b = regression.b;
+            
+            const T = 0.183 * Q / m;
+            const t0 = Math.pow(10, -b / m);
+            const S = 2.25 * T * (t0 * 60) / Math.pow(r, 2);
+
+            // 結果の表示
+            document.getElementById('results').style.display = 'block';
+            document.getElementById('resT').innerText = T.toExponential(3);
+            document.getElementById('resS').innerText = S.toExponential(3);
+            document.getElementById('resR2').innerText = r2.toFixed(4);
+
+            // グラフ描画
+            const trace1 = {
+                x: logTime,
+                y: drawdown,
+                mode: 'markers',
+                name: '実測値',
+                marker: { color: 'gray' }
+            };
+
+            const fitY = logTime.map(x => lre(x));
+            const trace2 = {
+                x: logTime,
+                y: fitY,
+                mode: 'lines',
+                name: 'Jacob Fit',
+                line: { color: 'red' }
+            };
+
+            const layout = {
+                title: 'Jacob Straight-line Analysis',
+                xaxis: { title: 'log10(time [min])' },
+                yaxis: { title: 'drawdown [m]' },
+                margin: { t: 40, b: 40, l: 40, r: 10 },
+                legend: { orientation: 'h', y: -0.2 }
+            };
+
+            Plotly.newPlot('plot', [trace1, trace2], layout);
+        }
+    </script>
+</body>
+</html>
